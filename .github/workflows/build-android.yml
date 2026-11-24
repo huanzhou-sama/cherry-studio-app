@@ -1,0 +1,81 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-android:
+    name: Build Android arm64-v8a Release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PROFILE: production
+      APK_UPDATES_ENABLED: 'false'
+      DOMESTIC_STORES_ENABLED: 'false'
+      EXPO_NO_TELEMETRY: '1'
+      SENTRY_DISABLE_AUTO_UPLOAD: 'true'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.2.1
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.19.0
+          cache: pnpm
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Android native project
+        run: pnpm exec expo prebuild --clean --platform android
+
+      - name: Build arm64-v8a release APK
+        run: |
+          cd android
+          ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a -Dorg.gradle.jvmargs=-Xmx4096m --no-daemon
+
+      - name: Verify APK package and checksum
+        id: verify
+        run: |
+          APK_PATH="$(find android/app/build/outputs/apk/release -maxdepth 1 -name '*.apk' | head -n 1)"
+          test -n "$APK_PATH"
+          test -f "$APK_PATH"
+          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
+          sha256sum "$APK_PATH"
+          ls -lh "$APK_PATH"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cherry-studio-android-arm64-v8a
+          path: ${{ steps.verify.outputs.apk_path }}
+          if-no-files-found: error
+          retention-days: 30
