@@ -19,6 +19,16 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       `Invalid DOMESTIC_STORES_ENABLED: ${domesticStoresSetting}. Expected true or false.`,
     );
   }
+  const rawAndroidVersionCode = process.env.ANDROID_VERSION_CODE?.trim();
+  const androidVersionCode = rawAndroidVersionCode
+    ? Number.parseInt(rawAndroidVersionCode, 10)
+    : undefined;
+  if (
+    rawAndroidVersionCode &&
+    (!/^[0-9]+$/.test(rawAndroidVersionCode) || !androidVersionCode || androidVersionCode <= 0)
+  ) {
+    throw new Error(`Invalid ANDROID_VERSION_CODE: ${rawAndroidVersionCode}`);
+  }
 
   const suffix = profile === 'development' ? '.dev' : profile === 'preview' ? '.preview' : '';
   const bundleIdentifier = `${config.ios!.bundleIdentifier}${suffix}`;
@@ -70,7 +80,11 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         ],
       },
     },
-    android: { ...config.android, package: `${config.android!.package}${suffix}` },
+    android: {
+      ...config.android,
+      ...(androidVersionCode !== undefined ? { versionCode: androidVersionCode } : {}),
+      package: `${config.android!.package}${suffix}`,
+    },
     plugins: [
       [
         './scripts/withAppUpdates.js',

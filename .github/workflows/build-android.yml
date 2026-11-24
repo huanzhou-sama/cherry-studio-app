@@ -2,6 +2,16 @@ name: Build Android APK
 
 on:
   workflow_dispatch:
+    inputs:
+      version_code:
+        description: 'Optional android.versionCode override (blank = match latest official CherryHQ release)'
+        required: false
+        type: string
+      publish_release:
+        description: 'Publish GitHub Release with the signed APK'
+        required: false
+        type: boolean
+        default: true
   push:
     branches:
       - main
@@ -9,7 +19,7 @@ on:
       - '**.md'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: build-android-${{ github.ref }}
@@ -48,7 +58,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Accept Android SDK licenses
+      - name: Accept Android SDK licenses and configure build-tools
         run: |
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
@@ -56,32 +66,138 @@ jobs:
           SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -name sdkmanager -type f | sort -V | tail -n 1)"
           test -n "$SDKMANAGER"
           yes | "$SDKMANAGER" --licenses > /dev/null || true
+          BUILD_TOOLS_DIR="$(find "$SDK_ROOT/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          test -n "$BUILD_TOOLS_DIR"
+          echo "$BUILD_TOOLS_DIR" >> "$GITHUB_PATH"
+
+      - name: Resolve versionName and official versionCode
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERRIDE_VERSION_CODE: ${{ inputs.version_code }}
+        run: |
+          VERSION_NAME="$(node -p "require('./app.json').expo.version")"
+          echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
+
+          if [ -n "${OVERRIDE_VERSION_CODE}" ]; then
+            if ! [[ "${OVERRIDE_VERSION_CODE}" =~ ^[0-9]+$ ]] || [ "${OVERRIDE_VERSION_CODE}" -le 0 ]; then
+              echo "Invalid version_code override: ${OVERRIDE_VERSION_CODE}" >&2
+              exit 1
+            fi
+            VERSION_CODE="${OVERRIDE_VERSION_CODE}"
+            echo "Using overridden ANDROID_VERSION_CODE=${VERSION_CODE}"
+          else
+            APK_URL=""
+            for ENDPOINT in \
+              "https://api.github.com/repos/CherryHQ/cherry-studio-app/releases/tags/v${VERSION_NAME}" \
+              "https://api.github.com/repos/CherryHQ/cherry-studio-app/releases/latest"
+            do
+              JSON="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$ENDPOINT" || true)"
+              if [ -n "$JSON" ]; then
+                APK_URL="$(printf '%s' "$JSON" | jq -r '.assets[]? | select(.name | endswith(".apk")) | .browser_download_url' | head -n 1)"
+                [ -n "$APK_URL" ] && break
+              fi
+            done
+            if [ -z "$APK_URL" ]; then
+              echo "Failed to locate upstream official APK asset to extract versionCode." >&2
+              exit 1
+            fi
+            echo "Fetching upstream APK metadata from: $APK_URL"
+            curl -fsSL -L -o /tmp/upstream.apk "$APK_URL"
+            BADGING="$(aapt2 dump badging /tmp/upstream.apk | head -n 5)"
+            rm -f /tmp/upstream.apk
+            echo "$BADGING"
+            VERSION_CODE="$(printf '%s' "$BADGING" | sed -n "s/.*versionCode='\([0-9][0-9]*\)'.*/\1/p" | head -n 1)"
+            if [ -z "$VERSION_CODE" ]; then
+              echo "Failed to extract versionCode from upstream APK." >&2
+              exit 1
+            fi
+            echo "Resolved official ANDROID_VERSION_CODE=${VERSION_CODE}"
+          fi
+
+          echo "ANDROID_VERSION_CODE=${VERSION_CODE}" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Generate Android native project
-        run: pnpm exec expo prebuild --clean --platform android
+        run: |
+          pnpm exec expo prebuild --clean --platform android
+          grep -n "versionCode\|versionName\|applicationId" android/app/build.gradle
 
       - name: Build arm64-v8a release APK
         run: |
           cd android
           ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a -Dorg.gradle.jvmargs=-Xmx4096m --no-daemon
 
-      - name: Verify APK package and checksum
-        id: verify
+      - name: Sign APK with AOSP testkey and verify
+        id: sign
         run: |
-          APK_PATH="$(find android/app/build/outputs/apk/release -maxdepth 1 -name '*.apk' | head -n 1)"
-          test -n "$APK_PATH"
-          test -f "$APK_PATH"
-          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
-          sha256sum "$APK_PATH"
-          ls -lh "$APK_PATH"
+          RAW_APK="$(find android/app/build/outputs/apk/release -maxdepth 1 -name '*.apk' | head -n 1)"
+          test -n "$RAW_APK"
+          test -f "$RAW_APK"
+
+          if ! curl -fsSL -o /tmp/testkey.x509.pem "https://raw.githubusercontent.com/aosp-mirror/platform_build/master/target/product/security/testkey.x509.pem" \
+            || ! curl -fsSL -o /tmp/testkey.pk8 "https://raw.githubusercontent.com/aosp-mirror/platform_build/master/target/product/security/testkey.pk8"; then
+            curl -fsSL "https://android.googlesource.com/platform/build/+/refs/heads/main/target/product/security/testkey.x509.pem?format=TEXT" | base64 -d > /tmp/testkey.x509.pem
+            curl -fsSL "https://android.googlesource.com/platform/build/+/refs/heads/main/target/product/security/testkey.pk8?format=TEXT" | base64 -d > /tmp/testkey.pk8
+          fi
+
+          mkdir -p dist
+          FINAL_APK="dist/cherry-studio-${VERSION_NAME}-ssh-auto-arm64-v8a.apk"
+          zipalign -p -f 4 "$RAW_APK" /tmp/aligned.apk
+          apksigner sign \
+            --key /tmp/testkey.pk8 \
+            --cert /tmp/testkey.x509.pem \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out "$FINAL_APK" \
+            /tmp/aligned.apk
+          rm -f /tmp/aligned.apk /tmp/testkey.pk8 /tmp/testkey.x509.pem
+
+          apksigner verify --print-certs "$FINAL_APK"
+          aapt2 dump badging "$FINAL_APK" | head -n 5
+          sha256sum "$FINAL_APK" > "${FINAL_APK}.sha256"
+          cat "${FINAL_APK}.sha256"
+          ls -lh "$FINAL_APK"
+
+          echo "apk_path=$FINAL_APK" >> "$GITHUB_OUTPUT"
+          echo "sha_path=${FINAL_APK}.sha256" >> "$GITHUB_OUTPUT"
+          echo "apk_sha256=$(awk '{print $1}' "${FINAL_APK}.sha256")" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: cherry-studio-android-arm64-v8a
-          path: ${{ steps.verify.outputs.apk_path }}
+          path: |
+            ${{ steps.sign.outputs.apk_path }}
+            ${{ steps.sign.outputs.sha_path }}
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish GitHub Release
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish_release == true || inputs.publish_release == 'true') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${VERSION_NAME}-ssh-auto.${{ github.run_number }}"
+          NOTES=$(cat <<EOF
+          Personal modified Android build based on Cherry Studio \`v${VERSION_NAME}\` (\`${{ github.sha }}\`).
+
+          ### Modifications
+          - **Package ID**: Official production ID (\`com.cherryai.cherrystudio_app\`)
+          - **versionName / versionCode**: \`${VERSION_NAME}\` / \`${ANDROID_VERSION_CODE}\` (aligned with upstream official release)
+          - **SSH Tools**: Auto-approve enabled for all 6 SSH tools (\`ssh_execute\`, \`ssh_list_files\`, \`ssh_read_file\`, \`ssh_write_file\`, \`ssh_download_file\`, \`ssh_upload_file\`)
+          - **OTA & Telemetry**: Disabled Expo OTA updates and Sentry/Observe/Insights reporting
+          - **Signing**: Signed with public AOSP \`testkey\` (\`arm64-v8a\` only)
+          - **APK SHA-256**: \`${{ steps.sign.outputs.apk_sha256 }}\`
+
+          > ⚠️ For personal use only. Signed with public AOSP \`testkey\`, not the official CherryHQ signature.
+          EOF
+          )
+          gh release create "$TAG" \
+            "${{ steps.sign.outputs.apk_path }}" \
+            "${{ steps.sign.outputs.sha_path }}" \
+            --title "Cherry Studio ${VERSION_NAME} (SSH Auto-Approve)" \
+            --prerelease \
+            --notes "$NOTES"
