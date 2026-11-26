@@ -270,6 +270,10 @@ export function createPiModelResolver(
                   : {}),
                 ...(adapter.api === 'openai-completions'
                   ? {
+                      ...(!isOpenRouter &&
+                      (isDeepSeekModel(model) || isDeepSeekModel({ ...model, modelId }))
+                        ? { requiresReasoningContentOnAssistantMessages: true }
+                        : {}),
                       ...(isOpenRouter
                         ? {
                             ...(modelId.startsWith('anthropic/')
@@ -338,6 +342,7 @@ export function createPiModelResolver(
           : {}),
         cacheRetention: provider.settings.cacheControl?.enabled === false ? 'none' : 'short',
         sessionId,
+        isCloudGateway: provider.id === CLOUD_PROVIDER_ID,
         fetch: (provider.id === CLOUD_PROVIDER_ID
           ? application.get('CloudRuntime').createModelFetch(modelId, cloudUse)
           : isDevMock
@@ -538,7 +543,7 @@ function resolveNativeWebTools({
           : api === 'openai-completions'
             ? 'deepseek-chat'
             : undefined;
-    if (dialect) return { dialect, search: true, fetch: true, functionToolMixing: true };
+    if (dialect) return { dialect, search: true, fetch: true, functionToolMixing: false };
   }
   const serverTools = providerRegistryService.resolveServerTools(
     provider,

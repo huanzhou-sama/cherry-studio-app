@@ -1,5 +1,6 @@
 import {
   ENDPOINT_TYPE,
+  MODEL_CAPABILITY,
   REASONING_FORMAT_PROFILES,
   selectFormatWire,
 } from '@cherrystudio/provider-registry';
@@ -7,7 +8,11 @@ import type { AssistantMessage, FetchFunction, Model as PiModel } from '@earendi
 import { KIMI_CODING_MODELS } from '@earendil-works/pi-ai/providers/kimi-coding.models';
 import { normalizeContext } from '@earendil-works/pi-ai/utils/transcript';
 
+import { modelService } from '@/backend/data/services/ModelService';
+import { installProviderRegistryTestSnapshot } from '@/backend/data/services/providerRegistryTestSnapshot';
+import { providerService } from '@/backend/data/services/ProviderService';
 import type { Model } from '@/shared/data/types/model';
+import { DEFAULT_API_FEATURES, type Provider } from '@/shared/data/types/provider';
 
 import { createTraceRecorder } from '../../../../observability/__tests__/_traceRecorder';
 import { formatMessageQuote } from '../../../host/turnRuntimeInput';
@@ -18,8 +23,24 @@ import {
   type PiLanguageEndpointType,
   type SupportedPiApi,
 } from '../piApiAdapters';
+import { piModelPayloadAttributes } from '../piModelDiagnostics';
+import { createPiModelResolver } from '../piModelResolver';
 import type { PiStreamFn } from '../piModelTypes';
+import { emptyAssistantMessage } from '../piStreamEvents';
 import { applyPiWebReplay } from '../PiWebResponse';
+
+const mockExpoFetch = jest.fn();
+
+jest.mock('expo/fetch', () => ({ fetch: (...args: unknown[]) => mockExpoFetch(...args) }));
+jest.mock('@/backend/data/services/ModelService', () => ({
+  modelService: { getById: jest.fn() },
+}));
+jest.mock('@/backend/data/services/ProviderService', () => ({
+  providerService: {
+    getByProviderId: jest.fn(),
+    resolveApiKey: jest.fn(),
+  },
+}));
 
 const mockAnthropicStreamSimple = jest.fn();
 const mockGoogleStreamSimple = jest.fn();
@@ -199,6 +220,144 @@ describe('Pi API adapters', () => {
     expect(wire).toContain('Tool result text');
     expect(wire).toContain('data:image/png;base64,cGl4ZWxz');
   });
+
+  test.each([
+    {
+      providerId: 'custom-relay',
+      apiModelId: 'deepseek-reasoner',
+      baseUrl: 'https://relay.example.test/v1',
+      required: true,
+    },
+    {
+      providerId: 'new-api',
+      apiModelId: 'deepseek-flash',
+      baseUrl: 'https://newapi.example.test/v1',
+      required: true,
+    },
+    {
+      providerId: 'custom-relay',
+      apiModelId: 'qwen3',
+      baseUrl: 'https://relay.example.test/v1',
+      required: false,
+    },
+    {
+      providerId: 'openrouter',
+      apiModelId: 'deepseek/deepseek-reasoner',
+      baseUrl: 'https://relay.example.test/v1',
+      required: false,
+    },
+    {
+      providerId: 'custom-openrouter',
+      apiModelId: 'deepseek/deepseek-flash',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      required: false,
+    },
+  ])(
+    'real $providerId $apiModelId payload fills missing assistant reasoning only when required',
+    async ({ providerId, apiModelId, baseUrl, required }) => {
+      installProviderRegistryTestSnapshot();
+      const endpoint = ENDPOINT_TYPE.OPENAI_CHAT_COMPLETIONS;
+      const adapter = resolvePiApiAdapter(endpoint);
+      const { streamSimple } = jest.requireActual<{ streamSimple: PiStreamFn }>(
+        '@earendil-works/pi-ai/api/openai-completions',
+      );
+      jest.spyOn(adapter, 'loadStreamSimple').mockResolvedValue(streamSimple);
+      const payloads: Record<string, unknown>[] = [];
+      mockExpoFetch.mockImplementation(async (_url: unknown, init?: RequestInit) => {
+        payloads.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ error: { message: 'captured' } }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      const provider: Provider = {
+        id: providerId,
+        name: 'Relay',
+        isEnabled: true,
+        authType: 'api-key',
+        authMethods: ['api-key'],
+        apiKeys: [],
+        apiFeatures: { ...DEFAULT_API_FEATURES },
+        defaultChatEndpoint: endpoint,
+        endpointConfigs: { [endpoint]: { adapterFamily: 'openai-compatible', baseUrl } },
+        settings: {},
+      };
+      const model: Model = {
+        id: `${providerId}::saved-model`,
+        modelId: 'saved-model',
+        apiModelId,
+        name: 'Saved model',
+        providerId,
+        isEnabled: true,
+        isHidden: false,
+        capabilities: [MODEL_CAPABILITY.REASONING, MODEL_CAPABILITY.FUNCTION_CALL],
+        endpointTypes: [endpoint],
+        reasoning: { defaultEffort: 'high', selectableEfforts: ['high'] },
+        supportsStreaming: true,
+      };
+      jest.mocked(modelService.getById).mockResolvedValue(model);
+      jest.mocked(providerService.getByProviderId).mockResolvedValue(provider);
+      jest.mocked(providerService.resolveApiKey).mockResolvedValue({
+        value: 'test-key',
+        apiKeySelection: { attribution: 'unknown' },
+      });
+      const resolution = await createPiModelResolver().resolveModel(
+        { modelId: model.modelId, providerId },
+        { reasoningEffort: 'high' },
+        'session',
+      );
+      expect(resolution.model.reasoning).toBe(true);
+      const historicalAssistant = emptyAssistantMessage(resolution.model);
+      const source = await resolution.streamFn(
+        resolution.model,
+        normalizeContext({
+          systemPrompt: 'Use lookup when needed.',
+          tools: [
+            {
+              name: 'lookup',
+              description: 'Look up data',
+              parameters: { type: 'object', properties: {} },
+            },
+          ],
+          messages: [
+            { role: 'user', content: 'Look up data.', timestamp: 1 },
+            { ...historicalAssistant, content: [{ type: 'text', text: 'I will look it up.' }] },
+            {
+              ...historicalAssistant,
+              stopReason: 'toolUse',
+              content: [{ type: 'toolCall', id: 'call', name: 'lookup', arguments: {} }],
+            },
+            {
+              role: 'toolResult',
+              toolCallId: 'call',
+              toolName: 'lookup',
+              content: [{ type: 'text', text: 'Found' }],
+              isError: false,
+              timestamp: 2,
+            },
+            { role: 'user', content: 'Continue.', timestamp: 3 },
+          ],
+        }),
+        { reasoning: 'high' },
+      );
+      expect((await source.result()).errorMessage).toContain('captured');
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).toMatchObject({
+        model: apiModelId,
+        tools: [{ type: 'function', function: { name: 'lookup' } }],
+      });
+      const assistants = (payloads[0]!.messages as Record<string, unknown>[]).filter(
+        (message) => message.role === 'assistant',
+      );
+      expect(assistants).toHaveLength(2);
+      expect(assistants[0]).toMatchObject({ content: 'I will look it up.' });
+      expect(assistants[1]).toMatchObject({ tool_calls: [{ id: 'call' }] });
+      for (const assistant of assistants) {
+        if (required) expect(assistant).toHaveProperty('reasoning_content', '');
+        else expect(assistant).not.toHaveProperty('reasoning_content');
+      }
+    },
+  );
 
   test.each(CASES)('binds $endpointType to $api', async (testCase) => {
     const adapter = resolvePiApiAdapter(testCase.endpointType);
@@ -409,11 +568,16 @@ describe('Pi API adapters', () => {
       },
     });
     const piModel = { api: 'anthropic-messages' } as PiModel<SupportedPiApi>;
+    const messages = [
+      { role: 'user', content: 'private question' },
+      { role: 'private-role', content: 'private answer' },
+    ];
     await streamFn(piModel, context, {
       trace,
       maxTokens: 2048,
       onPayload: async () => ({
         model: 'rewritten-model',
+        messages,
         max_tokens: 8192,
         tool_choice: { type: 'none' },
       }),
@@ -421,6 +585,7 @@ describe('Pi API adapters', () => {
     const options = mockAnthropicStreamSimple.mock.calls.at(-1)![2];
     expect(await options.onPayload({}, piModel)).toEqual({
       model: 'rewritten-model',
+      messages,
       max_tokens: 2048,
       tool_choice: { type: 'none' },
       thinking: { type: 'enabled', budget_tokens: 2047 },
@@ -428,9 +593,32 @@ describe('Pi API adapters', () => {
     expect(options).not.toHaveProperty('trace');
     trace?.end('ok');
     expect(records.at(-1)?.attributes).toEqual({
+      'gen_ai.request.model': 'rewritten-model',
+      'gen_ai.request.message_roles': 'user|other',
       'gen_ai.request.max_tokens': 2048,
       'gen_ai.request.max_tokens_field': 'max_tokens',
     });
+  });
+
+  test('marks a withheld wire model and bounds the roles without reviving the configured alias', () => {
+    const { traces, records } = createTraceRecorder();
+    const trace = traces.startTrace(
+      'pi.generate_content',
+      {},
+      { 'gen_ai.request.model': 'configured-alias' },
+    );
+    const messages = Array.from({ length: 10 }, () => ({ role: 'assistant', content: 'private' }));
+    trace?.setAttributes(
+      piModelPayloadAttributes({ model: 'private model label', messages }, 'openai-completions'),
+    );
+    trace?.end('error');
+    expect(records.at(-1)?.attributes).toMatchObject({
+      'gen_ai.request.model_omitted': true,
+      'gen_ai.request.message_roles':
+        'assistant|assistant|assistant|assistant|omitted|assistant|assistant|assistant|assistant',
+    });
+    expect(records.at(-1)?.attributes['gen_ai.request.model']).toBeUndefined();
+    expect(JSON.stringify(records.at(-1))).not.toContain('private');
   });
 
   test('applies Gemini tool compatibility after an existing payload hook without registry parameters', async () => {

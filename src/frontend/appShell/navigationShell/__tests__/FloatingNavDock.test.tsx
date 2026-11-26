@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { View } from 'react-native';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
+import type { NavDestinationId, NavTabId } from '../dockTabs';
 import { FloatingNavDock } from '../FloatingNavDock';
 import { NavIcon } from '../NavIcon';
 import type { NavDragState } from '../state';
@@ -23,11 +24,12 @@ const createMockSharedValue = <T,>(initialValue: T) => {
 };
 
 let mockShellState = {
-  activeDestination: 'more' as const,
-  activeDockTab: 'more' as const,
+  activeDestination: 'more' as NavDestinationId,
+  activeDockTab: 'more' as NavTabId,
   dragState: null as NavDragState | null,
   isAtRoot: true,
   isDockVisible: true,
+  isOnboardingBlocking: false,
   navigateToDestination: jest.fn(),
   pinnedTabs: ['agents'] as (
     | 'agents'
@@ -146,6 +148,7 @@ describe('FloatingNavDock drag preview', () => {
       dragState: null,
       isAtRoot: true,
       isDockVisible: true,
+      isOnboardingBlocking: false,
       navigateToDestination: jest.fn(),
       pinnedTabs: ['agents'],
       registerDockRect: jest.fn(),
@@ -159,7 +162,23 @@ describe('FloatingNavDock drag preview', () => {
     renderer = undefined;
   });
 
-  test('shows a filled active tab without a capsule background and keeps the dashed drag preview', () => {
+  test('mounts no dock or controls while first-use admission is blocked', () => {
+    mockShellState.isDockVisible = false;
+    mockShellState.isOnboardingBlocking = true;
+    act(() => {
+      renderer = create(<FloatingNavDock />);
+    });
+    expect(renderer!.toJSON()).toBeNull();
+
+    mockShellState.isDockVisible = true;
+    mockShellState.isOnboardingBlocking = false;
+    act(() => renderer!.update(<FloatingNavDock />));
+    expect(renderer!.root.findByProps({ testID: 'floating-nav-dock' }).props.pointerEvents).toBe(
+      'box-none',
+    );
+  });
+
+  test('shows a rounded-rectangle active background without a border and keeps the dashed drag preview', () => {
     mockShellState.dragState = {
       draggingOut: false,
       id: 'drawings',
@@ -171,20 +190,95 @@ describe('FloatingNavDock drag preview', () => {
       renderer = create(<FloatingNavDock />);
     });
 
+    const row = renderer!.root.findByProps({ testID: 'floating-nav-row' });
+    expect(row.props.className.split(' ')).toContain('gap-2');
+
     const activeTab = renderer!.root.findByProps({ testID: 'floating-nav-tab-more' });
     expect(activeTab.findByType(NavIcon).props.filled).toBe(true);
     const activeCapsule = activeTab
       .findAllByType(View)
       .find((view) => view.props.className?.split(' ').includes('h-9'));
     expect(activeCapsule).toBeDefined();
-    expect(activeCapsule!.props.className).not.toMatch(/bg-secondary|border-border-subtle/);
+    expect(activeCapsule!.props.collapsable).toBe(false);
+    expect(activeCapsule!.props.className.split(' ')).toEqual(
+      expect.arrayContaining(['w-full', 'max-w-24', 'rounded-xl', 'bg-secondary-active']),
+    );
+    expect(activeCapsule!.props.className.split(' ')).not.toContain('rounded-full');
+    expect(activeCapsule!.props.className).not.toMatch(/border/);
+
+    const inactiveTab = renderer!.root.findByProps({ testID: 'floating-nav-tab-chat' });
+    expect(inactiveTab.findByType(NavIcon).props.filled).toBe(false);
+    const inactiveCapsule = inactiveTab
+      .findAllByType(View)
+      .find((view) => view.props.className?.split(' ').includes('h-9'));
+    expect(inactiveCapsule).toBeDefined();
+    expect(inactiveCapsule!.props.collapsable).toBe(false);
+    expect(inactiveCapsule!.props.className.split(' ')).toContain('rounded-xl');
+    expect(inactiveCapsule!.props.className).not.toMatch(/bg-secondary/);
 
     const preview = renderer!.root.findByProps({ testID: 'floating-nav-preview-drawings' });
     const previewCapsule = preview
       .findAllByType(View)
       .find((view) => view.props.className?.split(' ').includes('h-9'));
+    expect(previewCapsule?.props.collapsable).toBe(false);
     expect(previewCapsule?.props.className.split(' ')).toEqual(
-      expect.arrayContaining(['bg-secondary-active', 'border-border-selected', 'border-dashed']),
+      expect.arrayContaining([
+        'rounded-xl',
+        'bg-secondary-active',
+        'border-border-selected',
+        'border-dashed',
+      ]),
+    );
+  });
+
+  test('keeps active background capsules uncollapsed when switching tabs', () => {
+    mockShellState.activeDestination = 'chat';
+    mockShellState.activeDockTab = 'chat';
+
+    act(() => {
+      renderer = create(<FloatingNavDock />);
+    });
+
+    const getCapsule = (tabId: NavTabId) =>
+      renderer!.root
+        .findByProps({ testID: `floating-nav-tab-${tabId}` })
+        .findAllByType(View)
+        .find((view) => view.props.className?.split(' ').includes('h-9'));
+
+    const initialMoreCapsule = getCapsule('more');
+    expect(initialMoreCapsule).toBeDefined();
+    expect(initialMoreCapsule!.props.collapsable).toBe(false);
+    expect(initialMoreCapsule!.props.className.split(' ')).toContain('rounded-xl');
+    expect(initialMoreCapsule!.props.className).not.toMatch(/bg-secondary/);
+
+    mockShellState.activeDestination = 'more';
+    mockShellState.activeDockTab = 'more';
+    act(() => {
+      renderer!.update(<FloatingNavDock />);
+    });
+
+    const selectedMoreCapsule = getCapsule('more');
+    expect(selectedMoreCapsule).toBeDefined();
+    expect(selectedMoreCapsule!.props.collapsable).toBe(false);
+    expect(selectedMoreCapsule!.props.className.split(' ')).toEqual(
+      expect.arrayContaining(['rounded-xl', 'bg-secondary-active']),
+    );
+
+    const unselectedChatCapsule = getCapsule('chat');
+    expect(unselectedChatCapsule).toBeDefined();
+    expect(unselectedChatCapsule!.props.collapsable).toBe(false);
+
+    mockShellState.activeDestination = 'chat';
+    mockShellState.activeDockTab = 'chat';
+    act(() => {
+      renderer!.update(<FloatingNavDock />);
+    });
+
+    const reselectedChatCapsule = getCapsule('chat');
+    expect(reselectedChatCapsule).toBeDefined();
+    expect(reselectedChatCapsule!.props.collapsable).toBe(false);
+    expect(reselectedChatCapsule!.props.className.split(' ')).toEqual(
+      expect.arrayContaining(['rounded-xl', 'bg-secondary-active']),
     );
   });
 

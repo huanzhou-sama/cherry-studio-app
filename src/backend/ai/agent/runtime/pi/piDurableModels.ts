@@ -18,6 +18,7 @@ import { readKnownAiFinishReason } from '@/shared/utils/aiFailure';
 
 import type { TraceSpan } from '../../../observability';
 import type { RuntimeModel, RuntimeOptions, RuntimeUsageReport } from '../types';
+import { projectPiReasoningHistory } from './modelMessages';
 import { resolvePiCompactionPolicy } from './piCompaction';
 import { imageModelStream } from './piDurableImageModel';
 import { piDurableUsage, withPiContinuationUsage } from './piDurableProjection';
@@ -135,6 +136,7 @@ export function createPiDurableModels(
             undefined,
             options?.signal,
           );
+          const requestContext = projectPiReasoningHistory(context, resolved.model, model.id);
           trace?.setAttributes({
             'gen_ai.request.model': resolved.model.id,
             'gen_ai.provider.id': resolved.model.provider,
@@ -188,21 +190,32 @@ export function createPiDurableModels(
               resolved.model.contextWindow,
               explicitMaxTokens,
             );
-            trace?.setAttributes(piModelRequestAttributes(resolved, context, maxTokens));
-            const stream = await resolved.streamFn(resolved.model, context, {
+            trace?.setAttributes(piModelRequestAttributes(resolved, requestContext, maxTokens));
+            const stream = await resolved.streamFn(resolved.model, requestContext, {
               ...options,
               trace,
               onPayload: async (payload: unknown, wire: Model<Api>) => {
                 // A credential retry sends the request again; its metadata starts over.
                 if (!continuedContent) web?.reset();
                 let sent = (await onPayload?.(payload, wire)) ?? payload;
-                if (resolved.deepseekSafetyCheck)
-                  sent = { ...(sent as Record<string, unknown>), safety_check: { level: 'high' } };
+                if (resolved.deepseekSafetyCheck) {
+                  const body = sent as Record<string, unknown>;
+                  const tools = body.tools;
+                  if (
+                    !Array.isArray(tools) ||
+                    tools.every(
+                      (tool) =>
+                        tool?.type === 'deepseek_web_search' || tool?.type === 'deepseek_read_url',
+                    )
+                  ) {
+                    sent = { ...body, safety_check: { level: 'high' } };
+                  }
+                }
                 // Replay follows routing: a deferred server tool returns only beside its definition.
                 const prepared = applyPiWebReplay(
                   applyPiWebTools(sent, native?.dialect, routes),
                   wire,
-                  context.messages,
+                  requestContext.messages,
                 );
                 if (!continuedContent) return prepared;
                 const body = prepared as { messages: unknown[] };
