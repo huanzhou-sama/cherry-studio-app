@@ -181,23 +181,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v${VERSION_NAME}-ssh-auto.${{ github.run_number }}"
-          NOTES=$(cat <<EOF
-          Personal modified Android build based on Cherry Studio \`v${VERSION_NAME}\` (\`${{ github.sha }}\`).
-
-          ### Modifications
-          - **Package ID**: Official production ID (\`com.cherryai.cherrystudio_app\`)
-          - **versionName / versionCode**: \`${VERSION_NAME}\` / \`${ANDROID_VERSION_CODE}\` (aligned with upstream official release)
-          - **SSH Tools**: Auto-approve enabled for all 6 SSH tools (\`ssh_execute\`, \`ssh_list_files\`, \`ssh_read_file\`, \`ssh_write_file\`, \`ssh_download_file\`, \`ssh_upload_file\`)
-          - **OTA & Telemetry**: Disabled Expo OTA updates and Sentry/Observe/Insights reporting
-          - **Signing**: Signed with public AOSP \`testkey\` (\`arm64-v8a\` only)
-          - **APK SHA-256**: \`${{ steps.sign.outputs.apk_sha256 }}\`
-
-          > ⚠️ For personal use only. Signed with public AOSP \`testkey\`, not the official CherryHQ signature.
-          EOF
-          )
+          NOTES_FILE="$(mktemp)"
+          {
+            printf 'Personal modified Android build based on Cherry Studio `v%s` (`%s`).\n\n' "$VERSION_NAME" "${{ github.sha }}"
+            printf '| Item | Value |\n| --- | --- |\n'
+            printf '| versionName / versionCode | `%s` / `%s` |\n' "$VERSION_NAME" "$ANDROID_VERSION_CODE"
+            printf '| Package | `com.cherryai.cherrystudio_app` (official production id) |\n'
+            printf '| Architecture | `arm64-v8a` |\n'
+            printf '| Signing | public AOSP `testkey` |\n'
+            printf '| APK SHA-256 | `%s` |\n\n' "${{ steps.sign.outputs.apk_sha256 }}"
+            cat .github/fork-release-notes.md
+            echo
+            echo '> ⚠️ For personal use only. Signed with the public AOSP testkey, not the official CherryHQ signature.'
+          } > "$NOTES_FILE"
           gh release create "$TAG" \
             "${{ steps.sign.outputs.apk_path }}" \
             "${{ steps.sign.outputs.sha_path }}" \
-            --title "Cherry Studio ${VERSION_NAME} (SSH Auto-Approve)" \
-            --prerelease \
-            --notes "$NOTES"
+            --title "Cherry Studio ${VERSION_NAME} (Fork)" \
+            --notes-file "$NOTES_FILE"
