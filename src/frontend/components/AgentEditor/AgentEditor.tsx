@@ -50,7 +50,13 @@ import {
   useModelChoice,
   withCapability,
 } from '@/frontend/components/Policy';
+import { useQuery } from '@/frontend/data';
 import { usePreference } from '@/frontend/data/hooks';
+import {
+  forgetAgentDefaultFolder,
+  readAgentDefaultFolder,
+  writeAgentDefaultFolder,
+} from '@/frontend/data/utils/agentDefaultFolder';
 import {
   readAgentDefaultSsh,
   writeAgentDefaultSsh,
@@ -288,6 +294,11 @@ function AgentEditForm({
   const [isDefaultSshPickerOpen, setIsDefaultSshPickerOpen] = useState(false);
   const [defaultSshId, setDefaultSshId] = useState(() => readAgentDefaultSsh(agentId)?.id ?? '');
   const sshProfiles = useSshProfiles();
+  const [isDefaultFolderPickerOpen, setIsDefaultFolderPickerOpen] = useState(false);
+  const [defaultFolderId, setDefaultFolderId] = useState(
+    () => readAgentDefaultFolder(agentId) ?? '',
+  );
+  const folders = useQuery('/files/folders');
   const [defaultModelPreference] = usePreference('agent.default_model_id');
   const [form, setForm] = useState<AgentFormState>(() =>
     createAgentFormState(agent, template?.content),
@@ -343,6 +354,31 @@ function AgentEditForm({
     setIsDefaultSshPickerOpen(true);
   }, []);
   const closeDefaultSshPicker = useCallback(() => setIsDefaultSshPickerOpen(false), []);
+  const openDefaultFolderPicker = useCallback(() => {
+    Keyboard.dismiss();
+    setIsDefaultFolderPickerOpen(true);
+  }, []);
+  const closeDefaultFolderPicker = useCallback(() => setIsDefaultFolderPickerOpen(false), []);
+  const handleDefaultFolderSelect = useCallback(
+    (value: string) => {
+      setIsDefaultFolderPickerOpen(false);
+      if (!agentId) return;
+      writeAgentDefaultFolder(agentId, value || null);
+      setDefaultFolderId(value);
+    },
+    [agentId],
+  );
+  const defaultFolderOptions = useMemo(
+    () => [
+      {
+        description: t('agent.defaultFolder.description'),
+        label: t('agent.defaultFolder.none'),
+        value: '',
+      },
+      ...(folders.data ?? []).map((folder) => ({ label: folder.name, value: folder.id })),
+    ],
+    [folders.data, t],
+  );
   const handleDefaultSshSelect = useCallback(
     (value: string) => {
       setIsDefaultSshPickerOpen(false);
@@ -358,6 +394,7 @@ function AgentEditForm({
   );
   useEffect(() => {
     setDefaultSshId(readAgentDefaultSsh(agentId)?.id ?? '');
+    setDefaultFolderId(readAgentDefaultFolder(agentId) ?? '');
   }, [agentId]);
   const defaultSshOptions = useMemo(
     () => [
@@ -518,6 +555,7 @@ function AgentEditForm({
           if (presentation.presentation === 'sheet') presentation.onClose();
           else router.back();
           forgetAgentDefaultSsh(id);
+          forgetAgentDefaultFolder(id);
           void deleteAgents([id]).catch(() => {
             toast.show({ label: t('agent.toast.deleteFailed'), variant: 'danger' });
           });
@@ -770,6 +808,20 @@ function AgentEditForm({
               />
             ) : null}
             {agentId && form.mode === 'standard' ? (
+              <Section footer={t('agent.defaultFolder.description')}>
+                <Section.SelectItem
+                  accessibilityHint={t('agent.defaultFolder.description')}
+                  label={t('agent.defaultFolder.title')}
+                  onPress={openDefaultFolderPicker}
+                  testID="agent-default-folder"
+                  value={
+                    folders.data?.find((folder) => folder.id === defaultFolderId)?.name ??
+                    t('agent.defaultFolder.none')
+                  }
+                />
+              </Section>
+            ) : null}
+            {agentId && form.mode === 'standard' ? (
               <Section footer={t('ssh.defaultProfile.description')}>
                 <Section.SelectItem
                   accessibilityHint={t('ssh.defaultProfile.description')}
@@ -848,6 +900,17 @@ function AgentEditForm({
         selectedValue={form.mode}
         size="compact"
         title={t('agent.mode.title')}
+      />
+      <OptionPickerBottomSheet
+        helperText={t('agent.defaultFolder.description')}
+        onClose={closeDefaultFolderPicker}
+        onValueChange={handleDefaultFolderSelect}
+        open={isDefaultFolderPickerOpen}
+        options={defaultFolderOptions}
+        selectedValue={defaultFolderId}
+        size="compact"
+        testID="agent-default-folder-picker"
+        title={t('agent.defaultFolder.title')}
       />
       <OptionPickerBottomSheet
         helperText={t('ssh.defaultProfile.description')}

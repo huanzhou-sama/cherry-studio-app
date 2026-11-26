@@ -103,6 +103,8 @@ export type PersistCacheSchema = {
   // Agent -> default SSH profile binding; frontend-owned so opening or sending
   // an Agent chat connects silently without a restore prompt.
   'agent.default_ssh': Record<string, { id: string; revision: string }>;
+  // Agent -> default file library folder; fills a new chat's workspace.
+  'agent.default_folder': Record<string, string>;
   // Last local chat Agent; cold starts open its greeting rather than a Session.
   'chat.last_agent_id': string | null;
   // Last composer effort per Agent; clearing the cache restores model defaults.
@@ -122,6 +124,7 @@ export const DefaultPersistCache: PersistCacheSchema = {
   'remote_agent.translations': {},
   'chat.last_agent_id': null,
   'agent.default_ssh': {},
+  'agent.default_folder': {},
   'chat.reasoning_efforts': {},
   'internal.persist_probe': 0,
 };

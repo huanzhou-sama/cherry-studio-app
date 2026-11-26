@@ -32,6 +32,7 @@ import type { MessageListItem } from '@/frontend/components/Message';
 import { PolicyScope } from '@/frontend/components/Policy';
 import { queryKeys, useApiClient, useBackendModule } from '@/frontend/data';
 import { cacheService } from '@/frontend/data/CacheService';
+import { resolveAgentDefaultFolder } from '@/frontend/data/utils/agentDefaultFolder';
 import { useAgentApiById, useAgentSession } from '@/frontend/hooks/agent';
 import { useFileWorkspace } from '@/frontend/hooks/file';
 import { citationIds, collectCitationSources } from '@/frontend/utils/messageCitations';
@@ -122,6 +123,17 @@ function ResolvedChatContent({ target }: { target: ChatTarget }) {
   const { composerSession, completeAppend } = useChatComposerSession(target, draftHandoff);
   const session = useAgentSession(sessionId);
   const resolvedAgentId = session.data?.agentId ?? composerSession.draftAgentId ?? agentId;
+  // An Agent default folder fills the draft composer and the Session it creates.
+  const defaultAgentFolder = useMemo(() => {
+    if (sessionId) return undefined;
+    return resolveAgentDefaultFolder(resolvedAgentId, workspace.availableFolders);
+  }, [resolvedAgentId, sessionId, workspace.availableFolders]);
+  const workspaceFolderId = workspace.folderId ?? defaultAgentFolder?.id ?? null;
+  const draftWorkspaceId = target.kind === 'draft' ? target.workspaceDraftId : undefined;
+  useEffect(() => {
+    if (!draftWorkspaceId || workspace.folderId || !defaultAgentFolder) return;
+    cacheService.set(`chat.draft_workspace.${draftWorkspaceId}`, defaultAgentFolder.id);
+  }, [defaultAgentFolder, draftWorkspaceId, workspace.folderId]);
   // Entry actions seed the rich draft; only the user's send creates a message.
   const composerHandoff = getChatComposerHandoff(composerSession.seedHandoff);
   const sshProfile =
@@ -142,7 +154,7 @@ function ResolvedChatContent({ target }: { target: ChatTarget }) {
     initialAttachments: composerHandoff?.attachments,
     seedHandoff: composerSession.seedHandoff,
     sshDraftId: target.kind === 'draft' ? target.sshDraftId : undefined,
-    workspaceFolderId: !sessionId ? workspace.folderId : undefined,
+    workspaceFolderId: !sessionId ? workspaceFolderId : undefined,
   });
   const handoffToken =
     composerSession.pendingAppend ??
@@ -289,7 +301,7 @@ function ResolvedChatContent({ target }: { target: ChatTarget }) {
     <ChatShareSelectionProvider target={shareTarget} messages={messages}>
       <ComposerSessionProvider
         workspaceSessionId={sessionId}
-        workspaceFolderId={!sessionId ? workspace.folderId : undefined}
+        workspaceFolderId={!sessionId ? workspaceFolderId : undefined}
         key={composerSession.key}
         draftStore={controls.composer.draft}
         isFocused={isFocused}
