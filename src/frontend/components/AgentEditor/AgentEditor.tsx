@@ -52,6 +52,11 @@ import {
 } from '@/frontend/components/Policy';
 import { usePreference } from '@/frontend/data/hooks';
 import {
+  readAgentDefaultSsh,
+  writeAgentDefaultSsh,
+  forgetAgentDefaultSsh,
+} from '@/frontend/data/utils/agentDefaultSsh';
+import {
   useAgentApiById,
   useAgentMutations,
   useAgentToolBindingMutations,
@@ -59,6 +64,7 @@ import {
 } from '@/frontend/hooks/agent';
 import { useMcpServersApi } from '@/frontend/hooks/mcp/useMcpServers';
 import { useAgentSkillsApi } from '@/frontend/hooks/skill';
+import { useSshProfiles } from '@/frontend/hooks/ssh';
 import { useThemeColor } from '@/frontend/hooks/useThemeColor';
 import type { WriteAgentToolBinding } from '@/shared/data/api/schemas/agentToolBindings';
 import { agentPolicy } from '@/shared/data/managedPolicy';
@@ -279,6 +285,9 @@ function AgentEditForm({
   const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
   const [isModePickerOpen, setIsModePickerOpen] = useState(false);
   const [isToolApprovalModePickerOpen, setIsToolApprovalModePickerOpen] = useState(false);
+  const [isDefaultSshPickerOpen, setIsDefaultSshPickerOpen] = useState(false);
+  const [defaultSshId, setDefaultSshId] = useState(() => readAgentDefaultSsh(agentId)?.id ?? '');
+  const sshProfiles = useSshProfiles();
   const [defaultModelPreference] = usePreference('agent.default_model_id');
   const [form, setForm] = useState<AgentFormState>(() =>
     createAgentFormState(agent, template?.content),
@@ -329,6 +338,42 @@ function AgentEditForm({
     setIsModePickerOpen(true);
   }, []);
   const closeModePicker = useCallback(() => setIsModePickerOpen(false), []);
+  const openDefaultSshPicker = useCallback(() => {
+    Keyboard.dismiss();
+    setIsDefaultSshPickerOpen(true);
+  }, []);
+  const closeDefaultSshPicker = useCallback(() => setIsDefaultSshPickerOpen(false), []);
+  const handleDefaultSshSelect = useCallback(
+    (value: string) => {
+      setIsDefaultSshPickerOpen(false);
+      if (!agentId) return;
+      const profile = value ? sshProfiles.data?.find((item) => item.id === value) : undefined;
+      writeAgentDefaultSsh(
+        agentId,
+        profile ? { id: profile.id, revision: profile.revision } : null,
+      );
+      setDefaultSshId(profile?.id ?? '');
+    },
+    [agentId, sshProfiles.data],
+  );
+  useEffect(() => {
+    setDefaultSshId(readAgentDefaultSsh(agentId)?.id ?? '');
+  }, [agentId]);
+  const defaultSshOptions = useMemo(
+    () => [
+      {
+        description: t('ssh.defaultProfile.description'),
+        label: t('ssh.defaultProfile.none'),
+        value: '',
+      },
+      ...(sshProfiles.data ?? []).map((profile) => ({
+        description: `${profile.username}@${profile.host}:${profile.port}`,
+        label: profile.name,
+        value: profile.id,
+      })),
+    ],
+    [sshProfiles.data, t],
+  );
   const handleModeSelect = useCallback(
     (mode: AgentMode) => {
       updateForm('mode', mode);
@@ -472,6 +517,7 @@ function AgentEditForm({
         onConfirm: () => {
           if (presentation.presentation === 'sheet') presentation.onClose();
           else router.back();
+          forgetAgentDefaultSsh(id);
           void deleteAgents([id]).catch(() => {
             toast.show({ label: t('agent.toast.deleteFailed'), variant: 'danger' });
           });
@@ -723,6 +769,20 @@ function AgentEditForm({
                 skills={skills}
               />
             ) : null}
+            {agentId && form.mode === 'standard' ? (
+              <Section footer={t('ssh.defaultProfile.description')}>
+                <Section.SelectItem
+                  accessibilityHint={t('ssh.defaultProfile.description')}
+                  label={t('ssh.defaultProfile.title')}
+                  onPress={openDefaultSshPicker}
+                  testID="agent-default-ssh"
+                  value={
+                    sshProfiles.data?.find((profile) => profile.id === defaultSshId)?.name ??
+                    t('ssh.defaultProfile.none')
+                  }
+                />
+              </Section>
+            ) : null}
             {hasFailedSave ? (
               <Button onPress={retry} size="sm" variant="secondary">
                 {t('agent.actions.retry')}
@@ -788,6 +848,17 @@ function AgentEditForm({
         selectedValue={form.mode}
         size="compact"
         title={t('agent.mode.title')}
+      />
+      <OptionPickerBottomSheet
+        helperText={t('ssh.defaultProfile.description')}
+        onClose={closeDefaultSshPicker}
+        onValueChange={handleDefaultSshSelect}
+        open={isDefaultSshPickerOpen}
+        options={defaultSshOptions}
+        selectedValue={defaultSshId}
+        size="compact"
+        testID="agent-default-ssh-picker"
+        title={t('ssh.defaultProfile.title')}
       />
       <OptionPickerBottomSheet
         helperText={t('agent.toolApproval.footer')}

@@ -536,8 +536,9 @@ function TextChatInput({
     route.status === 'ready' ? chatReturnToHref(route.target) : providerSetupReturnTo;
   const focused = useIsFocused();
   const { prepare: prepareSshTarget, prompt: restoreSshTarget } = useSshTargetRestore(
-    sessionId,
+    sshContextId,
     isSshAvailable && focused && !isParallel,
+    agentId,
   );
   useEffect(() => {
     if (focused && cloudModel && !cloudAnswerMessage) openModelPicker();

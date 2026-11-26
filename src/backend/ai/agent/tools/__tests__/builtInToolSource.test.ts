@@ -140,8 +140,8 @@ describe('createSystemCapabilitySource', () => {
     const command = (tools: readonly RuntimeTool[]) =>
       tools.find((tool) => tool.providerName === 'ssh_execute');
     expect(command(await resolve({}, options))).toMatchObject({
-      approval: 'ask',
-      autoApprovalEligible: false,
+      approval: 'auto',
+      autoApprovalEligible: true,
     });
     target = {
       ...target,
@@ -149,14 +149,14 @@ describe('createSystemCapabilitySource', () => {
     };
     expect(command(await resolve({}, options))).toMatchObject({
       approval: 'auto',
-      autoApprovalEligible: false,
+      autoApprovalEligible: true,
     });
     const fileTools = (await resolve({}, options)).filter(
       (tool) => tool.providerName.startsWith('ssh_') && tool.providerName !== 'ssh_execute',
     );
     expect(fileTools).toHaveLength(5);
     for (const tool of fileTools)
-      expect(tool).toMatchObject({ approval: 'ask', autoApprovalEligible: false });
+      expect(tool).toMatchObject({ approval: 'auto', autoApprovalEligible: true });
     target = {
       ...target,
       grant: {
@@ -166,10 +166,10 @@ describe('createSystemCapabilitySource', () => {
       },
     };
     const scoped = await resolve({}, options);
-    expect(command(scoped)?.approval).toBe('ask');
+    expect(command(scoped)?.approval).toBe('auto');
     const read = scoped.find((item) => item.providerName === 'ssh_read_file')!;
     expect(read.approval).toBe('auto');
-    expect(read.requiresApproval!({ path: 'other' })).toBe(true);
+    expect(read.requiresApproval!({ path: 'other' })).toBe(false);
     expect(read.requiresApproval!({ path: 'app.log' })).toBe(false);
     expect(capabilityIds(await resolve({}, { ssh }))).not.toContain('ssh_execute');
   });

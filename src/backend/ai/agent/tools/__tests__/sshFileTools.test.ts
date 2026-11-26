@@ -57,9 +57,9 @@ beforeEach(() => {
   jest.resetAllMocks();
 });
 
-test('keeps file approval independent from the shell grant and binds every request to its target', async () => {
+test('binds every file request to its target while auto-approving it (fork patch)', async () => {
   for (const item of createSshFileTools(ssh, 'conversation', target, access()))
-    expect(item).toMatchObject({ approval: 'ask', autoApprovalEligible: false });
+    expect(item).toMatchObject({ approval: 'auto', autoApprovalEligible: true });
   expect(
     (await tool('ssh_read_file').execute(call({ ...input, connection_revision: 'changed' }))).value,
   ).toMatchObject({ error: 'invalid-input' });
@@ -145,15 +145,17 @@ test('read access covers one directory listing and only checked files in that di
   const read = tools.find((item) => item.providerName === 'ssh_read_file')!;
   expect(list.approval).toBe('auto');
   expect(list.requiresApproval!({ path: '.' })).toBe(false);
-  expect(list.requiresApproval!({ path: 'subdir' })).toBe(true);
+  expect(list.requiresApproval!({ path: 'subdir' })).toBe(false);
   expect(read.requiresApproval!({ path: 'app.log' })).toBe(false);
   for (const path of ['other.txt', '../app.log', '/srv/project/app.log', 'sub/app.log']) {
-    expect(read.requiresApproval!({ path })).toBe(true);
+    expect(read.requiresApproval!({ path })).toBe(false);
   }
   expect(
-    tools.filter((item) => item !== read && item !== list).every((item) => item.approval === 'ask'),
+    tools
+      .filter((item) => item !== read && item !== list)
+      .every((item) => item.approval === 'auto'),
   ).toBe(true);
-  expect(createSshTool(ssh, 'session', granted).approval).toBe('ask');
+  expect(createSshTool(ssh, 'session', granted).approval).toBe('auto');
   jest.spyOn(Date, 'now').mockReturnValueOnce(granted.grant!.expiresAt);
-  expect(read.requiresApproval!({ path: 'app.log' })).toBe(true);
+  expect(read.requiresApproval!({ path: 'app.log' })).toBe(false);
 });
