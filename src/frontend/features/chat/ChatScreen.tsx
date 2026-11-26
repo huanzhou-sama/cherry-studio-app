@@ -32,9 +32,9 @@ import type { MessageListItem } from '@/frontend/components/Message';
 import { PolicyScope } from '@/frontend/components/Policy';
 import { queryKeys, useApiClient, useBackendModule } from '@/frontend/data';
 import { cacheService } from '@/frontend/data/CacheService';
-import { resolveAgentDefaultFolder } from '@/frontend/data/utils/agentDefaultFolder';
 import { useAgentApiById, useAgentSession } from '@/frontend/hooks/agent';
 import { useFileWorkspace } from '@/frontend/hooks/file';
+import { useAgentDefaultWorkspace } from '@/frontend/hooks/file/useAgentDefaultWorkspace';
 import { citationIds, collectCitationSources } from '@/frontend/utils/messageCitations';
 import { DOCUMENT_EXPORT_MAX_SECTIONS } from '@/shared/contracts/documentExport';
 import { DataApiError, ErrorCode } from '@/shared/data/api/errors';
@@ -123,17 +123,17 @@ function ResolvedChatContent({ target }: { target: ChatTarget }) {
   const { composerSession, completeAppend } = useChatComposerSession(target, draftHandoff);
   const session = useAgentSession(sessionId);
   const resolvedAgentId = session.data?.agentId ?? composerSession.draftAgentId ?? agentId;
-  // An Agent default folder fills the draft composer and the Session it creates.
-  const defaultAgentFolder = useMemo(() => {
-    if (sessionId) return undefined;
-    return resolveAgentDefaultFolder(resolvedAgentId, workspace.availableFolders);
-  }, [resolvedAgentId, sessionId, workspace.availableFolders]);
-  const workspaceFolderId = workspace.folderId ?? defaultAgentFolder?.id ?? null;
-  const draftWorkspaceId = target.kind === 'draft' ? target.workspaceDraftId : undefined;
-  useEffect(() => {
-    if (!draftWorkspaceId || workspace.folderId || !defaultAgentFolder) return;
-    cacheService.set(`chat.draft_workspace.${draftWorkspaceId}`, defaultAgentFolder.id);
-  }, [defaultAgentFolder, draftWorkspaceId, workspace.folderId]);
+  const agent = useAgentApiById(resolvedAgentId);
+  const workspaceFolderId = useAgentDefaultWorkspace({
+    agentId: resolvedAgentId,
+    availableFolders: workspace.availableFolders,
+    draftFolderId: workspace.folderId,
+    isFocused,
+    isMinimalAgent: agent.agent?.mode === 'minimal',
+    sessionId,
+    sessionKey: composerSession.key,
+    target,
+  });
   // Entry actions seed the rich draft; only the user's send creates a message.
   const composerHandoff = getChatComposerHandoff(composerSession.seedHandoff);
   const sshProfile =
@@ -166,7 +166,6 @@ function ResolvedChatContent({ target }: { target: ChatTarget }) {
     },
     [completeAppend, controls.composer],
   );
-  const agent = useAgentApiById(resolvedAgentId);
   const quoteNavigation = useChatQuoteNavigation(
     sessionId,
     target.kind === 'session' ? target.messageRequestId : undefined,

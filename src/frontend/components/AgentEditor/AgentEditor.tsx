@@ -392,10 +392,6 @@ function AgentEditForm({
     },
     [agentId, sshProfiles.data],
   );
-  useEffect(() => {
-    setDefaultSshId(readAgentDefaultSsh(agentId)?.id ?? '');
-    setDefaultFolderId(readAgentDefaultFolder(agentId) ?? '');
-  }, [agentId]);
   const defaultSshOptions = useMemo(
     () => [
       {
@@ -404,7 +400,11 @@ function AgentEditForm({
         value: '',
       },
       ...(sshProfiles.data ?? []).map((profile) => ({
-        description: `${profile.username}@${profile.host}:${profile.port}`,
+        description: !profile.isEnabled
+          ? t('ssh.disabled')
+          : !profile.fingerprint
+            ? t('ssh.untrusted')
+            : `${profile.username}@${profile.host}:${profile.port}`,
         label: profile.name,
         value: profile.id,
       })),

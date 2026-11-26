@@ -535,10 +535,15 @@ function TextChatInput({
   const cloudReturnTo =
     route.status === 'ready' ? chatReturnToHref(route.target) : providerSetupReturnTo;
   const focused = useIsFocused();
+  const ensureSshDraftContext = useCallback(() => {
+    if (sessionId || sshDraftId) return;
+    router.setParams({ sshDraftId: randomUUID() });
+  }, [router, sessionId, sshDraftId]);
   const { prepare: prepareSshTarget, prompt: restoreSshTarget } = useSshTargetRestore(
     sshContextId,
     isSshAvailable && focused && !isParallel,
     agentId,
+    ensureSshDraftContext,
   );
   useEffect(() => {
     if (focused && cloudModel && !cloudAnswerMessage) openModelPicker();
